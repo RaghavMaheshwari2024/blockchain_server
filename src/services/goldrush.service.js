@@ -5,12 +5,18 @@ async function fetchGoldrushTxs(address, chain, cursor) {
 
   await rateLimit();
 
+  const apiKey = process.env.GOLDRUSH_API_KEY;
+
+  if (!apiKey) {
+    throw new Error('GOLDRUSH_API_KEY is not set. Cannot fetch Goldrush transactions.');
+  }
+
   const response = await axios.get(
     `https://api.goldrush.xyz/v1/${chain}/address/${address}/transactions`,
     {
       params: { cursor },
       headers: {
-        Authorization: `Bearer ${process.env.GOLDRUSH_API_KEY}`
+        Authorization: `Bearer ${apiKey}`
       }
     }
   );

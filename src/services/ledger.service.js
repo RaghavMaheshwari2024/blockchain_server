@@ -20,6 +20,10 @@ async function startHistoricalSync(wallet) {
           fetchGoldrushTxs(wallet.address, wallet.chain, cursor)
         );
 
+      logInfo(
+        `Fetched transactions: ${transactions.length} for ${wallet.address}`
+      );
+
       if (!transactions.length) break;
 
       const entries = transactions.map(tx => ({
@@ -51,10 +55,7 @@ async function startHistoricalSync(wallet) {
     logInfo(`Historical sync finished for ${wallet.address}`);
 
   } catch (err) {
-
     logError(`Historical sync failed for ${wallet.address}: ${err.message}`);
-    throw err;
-
   }
 }
 
