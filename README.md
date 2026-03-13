@@ -101,3 +101,25 @@ npm start
 
 Make sure your `.env` (or equivalent environment variables) is configured in your production environment.
 
+
+### Add all the transactions of any wallet address to MongoDB database:
+
+Use: 
+
+```bash
+# 1. Navigate to the project directory
+cd /home/raghav-maheshwari/Raghav/Software_Engg_Project/Server/node-server
+
+# 2. Import transactions from Covalent API to MongoDB
+# Replace the address and chain as needed
+node src/utils/importTransactions.js 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 eth-mainnet
+
+# 3. For other wallet addresses, just change the address and chain:
+node src/utils/importTransactions.js <YOUR_ADDRESS> <CHAIN>
+
+
+# Import for Vitalik's wallet on Ethereum
+node src/utils/importTransactions.js 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 eth-mainnet
+
+# Import for a Polygon address
+node src/utils/importTransactions.js 0x1234567890123456789012345678901234567890 polygon-mainnet
