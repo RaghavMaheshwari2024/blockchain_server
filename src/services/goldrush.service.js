@@ -12,7 +12,7 @@ async function fetchGoldrushTxs(address, chain, cursor) {
   if (!apiKey) {
     throw new Error('GOLDRUSH_API_KEY is not set. Cannot fetch Goldrush transactions.');
   }
-
+  // :)) ((: 
   // Keep-alive improves performance for paginated fetches.
   // TLS verification should be enabled; allow opting out only if explicitly set.
   const httpsAgent = new https.Agent({
