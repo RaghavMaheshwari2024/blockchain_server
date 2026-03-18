@@ -3,12 +3,14 @@ import dotenv from 'dotenv';
 import LedgerEntry from '../models/ledgerEntry.model.js';
 import Wallet from '../models/wallet.model.js';
 import axios from 'axios';
+import { fetchGoldrushTxs } from '../services/goldrush.service.js';
+import { fetchTatumTxs } from '../services/tatum.service.js';
+import { retryWithBackoff } from './retry.js';
 
 dotenv.config();
 
-// Chain identifier mapping for Covalent API
-// NOTE: Covalent/GoldRush only supports EVM chains, NOT Bitcoin
-const CHAIN_MAPPING = {
+// EVM chains - use Goldrush (Covalent)
+const EVM_CHAINS = {
   'ethereum-mainnet': 'eth-mainnet',
   'eth-mainnet': 'eth-mainnet',
   'polygon-mainnet': 'matic-mainnet',
@@ -17,17 +19,30 @@ const CHAIN_MAPPING = {
   'binance-mainnet': 'bsc-mainnet'
 };
 
-const SUPPORTED_CHAINS = Object.keys(CHAIN_MAPPING);
+// Non-EVM chains - use Tatum
+const NON_EVM_CHAINS = {
+  'btc-mainnet': 'bitcoin',
+  'bitcoin-mainnet': 'bitcoin',
+  'doge-mainnet': 'dogecoin',
+  'dogecoin-mainnet': 'dogecoin',
+  'ltc-mainnet': 'litecoin',
+  'litecoin-mainnet': 'litecoin'
+};
+
+const ALL_SUPPORTED_CHAINS = { ...EVM_CHAINS, ...NON_EVM_CHAINS };
+const MAX_PAGES = Number.parseInt(process.env.IMPORT_MAX_PAGES || '25', 10);
 
 /**
- * Import transactions from Covalent API to MongoDB
- * Usage: node --loader ts-node/esm src/utils/importTransactions.js <address> <chain>
+ * Import transactions from APIs to MongoDB
+ * Uses Goldrush (Covalent) for EVM chains and Tatum for non-EVM chains
+ * Usage: node src/utils/importTransactions.js <address> <chain>
  */
 async function importTransactionsFromAPI(address, chain) {
   try {
     // Validate chain is supported
-    if (!CHAIN_MAPPING[chain]) {
-      throw new Error(`Chain ${chain} is not supported. Supported chains: ${SUPPORTED_CHAINS.join(', ')}`);
+    if (!ALL_SUPPORTED_CHAINS[chain]) {
+      const supported = Object.keys(ALL_SUPPORTED_CHAINS).join(', ');
+      throw new Error(`Chain ${chain} is not supported. Supported chains: ${supported}`);
     }
 
     // Connect to MongoDB
@@ -52,96 +67,137 @@ async function importTransactionsFromAPI(address, chain) {
       console.log(`✓ Found existing wallet: ${wallet._id}`);
     }
 
-    // Fetch transactions from Covalent API
-    const apiKey = process.env.GOLDRUSH_API_KEY;
-    if (!apiKey) {
-      throw new Error('GOLDRUSH_API_KEY is not set');
-    }
-
-    // Map the chain to correct Covalent format
-    const mappedChain = CHAIN_MAPPING[chain];
-
     console.log(`\nFetching transactions for ${address} on ${chain}...`);
-    let allTransactions = [];
-    let cursor = null;
-    let pageCount = 0;
+    let totalFetched = 0;
+    let totalInserted = 0;
+    let totalDuplicates = 0;
+    let totalSkippedInvalid = 0;
 
-    do {
-      pageCount++;
-      const params = { key: apiKey };
-      if (cursor) params.cursor = cursor;
+    async function insertBatch(txs) {
+      if (!txs.length) return;
 
-      console.log(`  Fetching page ${pageCount}...`);
-
-      const response = await axios.get(
-        `https://api.covalenthq.com/v1/${mappedChain}/address/${address}/transactions_v2/`,
-        {
-          params,
-          timeout: 30000
-        }
+      const valid = txs.filter(t =>
+        typeof t?.wallet === 'string' &&
+        typeof t?.chain === 'string' &&
+        typeof t?.txHash === 'string' && t.txHash.length > 0 &&
+        Number.isFinite(t?.blockNumber) &&
+        Number.isFinite(t?.timestamp) &&
+        typeof t?.assetType === 'string' &&
+        typeof t?.source === 'string'
       );
 
-      const data = response.data?.data ?? response.data;
-      const items = data?.items ?? [];
+      totalSkippedInvalid += (txs.length - valid.length);
+      if (!valid.length) return;
 
-      if (!Array.isArray(items)) {
-        throw new Error('Invalid response format from API');
-      }
-
-      console.log(`  Found ${items.length} transactions on page ${pageCount}`);
-
-      // Transform transactions to match LedgerEntry schema
-      const transactions = items.map(tx => ({
-        wallet: address,
-        chain: chain,
-        txHash: tx.tx_hash,
-        blockNumber: tx.block_height,
-        timestamp: new Date(tx.block_signed_at).getTime(),
-        from: tx.from_address,
-        to: tx.to_address,
-        amount: tx.value || '0',
-        assetType: 'NATIVE',
-        source: 'covalent'
+      // Upsert by (wallet, chain, txHash) so re-runs don't create duplicates.
+      const ops = valid.map(doc => ({
+        updateOne: {
+          filter: { wallet: doc.wallet, chain: doc.chain, txHash: doc.txHash },
+          update: { $setOnInsert: doc },
+          upsert: true
+        }
       }));
 
-      console.log(`  Sample transaction: ${JSON.stringify(transactions[0])}`);
-      allTransactions = allTransactions.concat(transactions);
-      cursor = data?.pagination?.cursor;
+      const res = await LedgerEntry.bulkWrite(ops, { ordered: false });
+      const upserted = res?.upsertedCount || 0;
+      totalInserted += upserted;
+      totalDuplicates += (valid.length - upserted);
+    }
 
-    } while (cursor);
+    // Use Goldrush for EVM chains
+    if (EVM_CHAINS[chain]) {
+      console.log('Using Goldrush (Covalent) API for EVM chain...');
+      let cursor = null;
+      let pageCount = 0;
 
-    console.log(`\n✓ Total transactions fetched: ${allTransactions.length}`);
+      do {
+        pageCount++;
+        if (pageCount > MAX_PAGES) {
+          console.log(`  Reached max pages (${MAX_PAGES}). Stopping early.`);
+          break;
+        }
+        console.log(`  Fetching page ${pageCount}...`);
 
-    if (allTransactions.length === 0) {
+        const { transactions, nextCursor } = await retryWithBackoff(() =>
+          fetchGoldrushTxs(address, chain, cursor)
+        );
+
+        console.log(`  Found ${transactions.length} transactions on page ${pageCount}`);
+        totalFetched += transactions.length;
+
+        const txs = transactions.map(tx => ({
+          wallet: address,
+          chain: chain,
+          txHash: tx.txHash ? String(tx.txHash) : '',
+          blockNumber: Number.isFinite(Number(tx.blockNumber)) ? Number(tx.blockNumber) : 0,
+          timestamp: Number.isFinite(Number(tx.timestamp)) ? Number(tx.timestamp) : Date.now(),
+          from: tx.from,
+          to: tx.to,
+          amount: tx.value,
+          assetType: tx.assetType || 'NATIVE',
+          source: 'goldrush'
+        }));
+
+        await insertBatch(txs);
+        cursor = nextCursor;
+
+      } while (cursor);
+
+    } 
+    // Use Tatum for non-EVM chains
+    else if (NON_EVM_CHAINS[chain]) {
+      console.log('Using Tatum API for non-EVM chain...');
+      let offset = 0;
+      let pageCount = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        pageCount++;
+        if (pageCount > MAX_PAGES) {
+          console.log(`  Reached max pages (${MAX_PAGES}). Stopping early.`);
+          break;
+        }
+        console.log(`  Fetching page ${pageCount}...`);
+
+        const { transactions, nextOffset } = await retryWithBackoff(() =>
+          fetchTatumTxs(address, chain, offset)
+        );
+
+        console.log(`  Found ${transactions.length} transactions on page ${pageCount}`);
+        totalFetched += transactions.length;
+
+        if (!transactions.length) break;
+
+        const txs = transactions.map(tx => ({
+          wallet: address,
+          chain: chain,
+          txHash: tx.txHash ? String(tx.txHash) : '',
+          blockNumber: Number.isFinite(Number(tx.blockNumber)) ? Number(tx.blockNumber) : 0,
+          timestamp: Number.isFinite(Number(tx.timestamp)) ? Number(tx.timestamp) : Date.now(),
+          from: tx.from,
+          to: tx.to,
+          amount: tx.value,
+          assetType: tx.assetType || 'NATIVE',
+          source: 'tatum'
+        }));
+
+        await insertBatch(txs);
+        offset = nextOffset;
+        hasMore = transactions.length === 50; // Continue if full page
+
+      }
+    }
+
+    console.log(`\n✓ Total transactions fetched: ${totalFetched}`);
+    console.log(`✓ Inserted: ${totalInserted}, duplicates skipped: ${totalDuplicates}`);
+    if (totalSkippedInvalid) {
+      console.log(`⚠ Skipped invalid records: ${totalSkippedInvalid}`);
+    }
+
+    if (totalFetched === 0) {
       console.log('No transactions to import');
       await mongoose.disconnect();
       return;
-    }
-
-    // Insert into MongoDB with duplicate handling
-    console.log(`\nInserting ${allTransactions.length} transactions into MongoDB...`);
-
-    let insertedCount = 0;
-    let duplicateCount = 0;
-
-    try {
-      const result = await LedgerEntry.insertMany(allTransactions, { ordered: false });
-      insertedCount = result.length;
-      console.log(`✓ Successfully inserted ${insertedCount} transactions`);
-      console.log(`  Result length: ${result.length}, IDs: ${result.slice(0, 2).map(r => r._id)}`);
-    } catch (err) {
-      console.error(`Insert error code: ${err.code}`);
-      console.error(`Insert error message: ${err.message}`);
-      
-      if (err.code === 11000 || err.writeErrors) {
-        // Duplicate key error - some transactions already exist
-        insertedCount = err.insertedCount || 0;
-        duplicateCount = allTransactions.length - insertedCount;
-        console.log(`⚠ Skipped ${duplicateCount} duplicate transactions`);
-        console.log(`✓ Inserted ${insertedCount} new transactions`);
-      } else {
-        throw err;
-      }
     }
 
     // Update wallet status
