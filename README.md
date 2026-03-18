@@ -112,7 +112,15 @@ cd /home/raghav-maheshwari/Raghav/Software_Engg_Project/Server/node-server
 
 # 2. Import transactions from Covalent API to MongoDB
 # Replace the address and chain as needed
+
+#Ethereum:
 node src/utils/importTransactions.js 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 eth-mainnet
+# Bitcoin: genesis block
+node src/utils/importTransactions.js 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa btc-mainnet
+# Degecoin:
+node src/utils/importTransactions.js DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L doge-mainnet
+#Litecoin:
+node src/utils/importTransactions.js LZHVJH5YH6m3zvY4xXHzkwmo7aXstixSeK ltc-mainnet
 
 # 3. For other wallet addresses, just change the address and chain:
 node src/utils/importTransactions.js <YOUR_ADDRESS> <CHAIN>
