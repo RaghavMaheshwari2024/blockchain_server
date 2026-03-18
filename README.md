@@ -147,3 +147,20 @@ node src/utils/importTransactions.js LZHVJH5YH6m3zvY4xXHzkwmo7aXstixSeK ltc-main
 #   Non-EVM (Tatum): btc-mainnet, bitcoin-mainnet, doge-mainnet, dogecoin-mainnet, ltc-mainnet, litecoin-mainnet
 node src/utils/importTransactions.js <YOUR_ADDRESS> <CHAIN>
 ```
+
+### Testing
+
+Run the test suite:
+
+```bash
+npm test
+```
+
+```bash
+npm test -- --coverage
+```
+
+Notes:
+
+- The project uses ESM (`"type": "module"`). Jest is run with `node --experimental-vm-modules`, so the `ExperimentalWarning: VM Modules...` message is expected.
+- Some tests intentionally trigger retry/error paths, so you may see `console.log` / `console.error` output during the test run even when tests pass.
