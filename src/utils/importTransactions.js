@@ -6,12 +6,30 @@ import axios from 'axios';
 
 dotenv.config();
 
+// Chain identifier mapping for Covalent API
+// NOTE: Covalent/GoldRush only supports EVM chains, NOT Bitcoin
+const CHAIN_MAPPING = {
+  'ethereum-mainnet': 'eth-mainnet',
+  'eth-mainnet': 'eth-mainnet',
+  'polygon-mainnet': 'matic-mainnet',
+  'matic-mainnet': 'matic-mainnet',
+  'bsc-mainnet': 'bsc-mainnet',
+  'binance-mainnet': 'bsc-mainnet'
+};
+
+const SUPPORTED_CHAINS = Object.keys(CHAIN_MAPPING);
+
 /**
  * Import transactions from Covalent API to MongoDB
  * Usage: node --loader ts-node/esm src/utils/importTransactions.js <address> <chain>
  */
 async function importTransactionsFromAPI(address, chain) {
   try {
+    // Validate chain is supported
+    if (!CHAIN_MAPPING[chain]) {
+      throw new Error(`Chain ${chain} is not supported. Supported chains: ${SUPPORTED_CHAINS.join(', ')}`);
+    }
+
     // Connect to MongoDB
     const mongoUri = process.env.MONGO_URI;
     if (!mongoUri) {
@@ -40,6 +58,9 @@ async function importTransactionsFromAPI(address, chain) {
       throw new Error('GOLDRUSH_API_KEY is not set');
     }
 
+    // Map the chain to correct Covalent format
+    const mappedChain = CHAIN_MAPPING[chain];
+
     console.log(`\nFetching transactions for ${address} on ${chain}...`);
     let allTransactions = [];
     let cursor = null;
@@ -53,7 +74,7 @@ async function importTransactionsFromAPI(address, chain) {
       console.log(`  Fetching page ${pageCount}...`);
 
       const response = await axios.get(
-        `https://api.covalenthq.com/v1/${chain}/address/${address}/transactions_v2/`,
+        `https://api.covalenthq.com/v1/${mappedChain}/address/${address}/transactions_v2/`,
         {
           params,
           timeout: 30000
